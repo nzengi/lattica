@@ -1,0 +1,36 @@
+[package]
+name = "lattica-liquidator"
+version.workspace = true
+edition.workspace = true
+description = "LATTICA — Drift Protocol v2 liquidation bot (paper-trade first, then mainnet)"
+
+[[bin]]
+name = "lattica-liq"
+path = "src/main.rs"
+
+[dependencies]
+# Drift SDK — wraps Drift v2 on-chain program via FFI (libdrift_ffi_sys required).
+# Provides DriftClient, account decoders, margin/health math, oracle integration, ix builders.
+drift-rs = "=1.0.0-alpha.14"
+
+# Solana — drift-rs pins solana-sdk 2.x.
+solana-sdk = "2"
+solana-client = "2"
+solana-account-decoder = "2"
+
+# Async runtime
+tokio.workspace = true
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Errors
+thiserror.workspace = true
+anyhow = "1.0"
+
+# Misc
+bs58.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+hex.workspace = true

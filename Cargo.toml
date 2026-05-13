@@ -1,5 +1,6 @@
 [workspace]
 resolver = "2"
+exclude = ["vendor"]
 members = [
     "crates/shred",
     "crates/reedsol",
@@ -7,6 +8,7 @@ members = [
     "crates/listener",
     "crates/attest",
     "crates/cli",
+    "crates/liquidator",
 ]
 
 [workspace.package]
