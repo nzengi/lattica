@@ -1,0 +1,24 @@
+[package]
+name = "lattica-listener"
+version.workspace = true
+edition.workspace = true
+description = "LATTICA — validator-adjacent shred ingester (Turbine port) + Δ_lthash recomputer (Phase 2)"
+
+[[bin]]
+name = "lattica-listen"
+path = "src/main.rs"
+
+[dependencies]
+lattica-shred.workspace = true
+lattica-reedsol.workspace = true
+lattica-lthash.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+bs58.workspace = true
+hex.workspace = true
+ureq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true

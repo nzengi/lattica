@@ -1,0 +1,9 @@
+[package]
+name = "lattica-reedsol"
+version.workspace = true
+edition.workspace = true
+description = "LATTICA — Reed-Solomon (32,64) reconstruction of a Solana FEC set"
+
+[dependencies]
+reed-solomon-erasure.workspace = true
+thiserror.workspace = true

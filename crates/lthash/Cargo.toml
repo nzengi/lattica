@@ -1,0 +1,9 @@
+[package]
+name = "lattica-lthash"
+version.workspace = true
+edition.workspace = true
+description = "LATTICA — per-account LtHash + per-slot delta (homomorphic state-diff commitment)"
+
+[dependencies]
+blake3.workspace = true
+thiserror.workspace = true

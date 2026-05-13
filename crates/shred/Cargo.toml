@@ -1,0 +1,17 @@
+[package]
+name = "lattica-shred"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LATTICA — Solana shred parser, Merkle-path + Ed25519 verifier (validator-adjacent, no solana-* deps)"
+
+[dependencies]
+ed25519-dalek.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+reed-solomon-erasure.workspace = true
+
+[dev-dependencies]
+hex.workspace = true

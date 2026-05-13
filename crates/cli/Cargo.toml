@@ -1,0 +1,23 @@
+[package]
+name = "lattica-cli"
+version.workspace = true
+edition.workspace = true
+description = "LATTICA — demo CLI: verify a shred, hash a mainnet account, fetch leader info"
+
+[[bin]]
+name = "lattica"
+path = "src/main.rs"
+
+[dependencies]
+lattica-shred.workspace = true
+lattica-lthash.workspace = true
+lattica-listener = { path = "../listener" }
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+ureq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+bs58.workspace = true
+hex.workspace = true
+thiserror.workspace = true

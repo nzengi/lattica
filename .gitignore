@@ -1,0 +1,19 @@
+/target
+/vendor
+**/*.rs.bk
+
+# secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# editor / OS
+*.swp
+.idea
+.vscode
+.DS_Store
+
+# fixtures
+fixtures/*.bin
