@@ -18,6 +18,9 @@ solana-sdk = "2"
 solana-client = "2"
 solana-account-decoder = "2"
 
+# Same anchor-lang version drift-rs depends on internally — required for `User::try_deserialize`.
+anchor-lang = "0.31"
+
 # Async runtime
 tokio.workspace = true
 

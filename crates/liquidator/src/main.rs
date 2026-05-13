@@ -11,6 +11,7 @@
 use anyhow::Result;
 
 mod paper;
+mod scanner;
 
 #[tokio::main]
 async fn main() -> Result<()> {
