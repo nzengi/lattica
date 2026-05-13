@@ -11,6 +11,7 @@
 use anyhow::Result;
 
 mod paper;
+mod probe;
 mod scanner;
 
 #[tokio::main]
@@ -25,8 +26,9 @@ async fn main() -> Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_else(|| "paper".to_string());
     match mode.as_str() {
         "paper" => paper::run().await,
+        "probe" => probe::run().await,
         other => {
-            eprintln!("unknown mode: {other}. supported: paper");
+            eprintln!("unknown mode: {other}. supported: paper | probe");
             Ok(())
         }
     }
