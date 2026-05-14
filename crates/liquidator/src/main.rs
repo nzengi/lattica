@@ -1,12 +1,14 @@
 //! lattica-liq — Drift v2 liquidation bot.
 //!
-//! Phases of this binary:
-//!   v0.1  PAPER MODE   — connect to mainnet, scan Drift User accounts, compute
-//!                        margin/health, identify liquidatable candidates, PRINT
-//!                        what would happen. No tx signing, no Jito submission.
-//!   v0.2  ARMED        — same scanning + actually build liquidation ixs + simulate
-//!                        them locally (rpc.simulateTransaction). Still no submit.
-//!   v0.3  LIVE MAINNET — submit via Jito bundle with tip; rotate $300 collateral.
+//! Modes:
+//!   paper        v0.1  scan Drift Users, decode positions, no signing
+//!   probe        v0.2  direct-RPC PerpMarket / SpotMarket decode probe
+//!   simulate     v0.3  build LiquidatePerp ix manually + simulate (BLOCKED — see disc-probe)
+//!   disc-probe   v0.3  send candidate discriminators against the live program;
+//!                      every standard Anchor sha256("global:<name>")[:8] returns
+//!                      InstructionFallbackNotFound — on-chain dispatcher diverges
+//!                      from public IDL. See memory/project_drift_dispatcher.md.
+//!   idl-dump     v0.3  fetch + decompress on-chain Anchor IDL for diff.
 
 use anyhow::Result;
 
