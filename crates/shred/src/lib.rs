@@ -47,6 +47,13 @@ pub const PROOF_ENTRIES_FOR_32_32: u8 = 6;
 pub const DATA_SHRED_PAYLOAD_SIZE: usize = 1203;
 pub const CODING_SHRED_PAYLOAD_SIZE: usize = 1228;
 
+/// Offset of the `flags` byte within a Data shred (after parent_offset u16).
+pub const DATA_SHRED_FLAGS_OFFSET: usize = 85;
+/// Bitmask in `flags`: marks the final shred of a FEC set (no reconstruction past this).
+pub const SHRED_FLAG_DATA_COMPLETE: u8 = 0b0100_0000;
+/// Bitmask in `flags`: marks the final shred of the *slot*. Implies DATA_COMPLETE.
+pub const SHRED_FLAG_LAST_IN_SLOT: u8 = 0b1000_0000;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ShredError {
     #[error("payload too small: {0} bytes")]
@@ -130,6 +137,20 @@ pub struct ParsedShred<'a> {
     pub chained_root: Option<[u8; 32]>,
     /// 0-based index of this shred inside its FEC set (data + coding share the same Merkle tree).
     pub erasure_shard_index: usize,
+    /// For data shreds only: the `flags` byte at offset 85. `None` for coding shreds.
+    pub data_flags: Option<u8>,
+}
+
+impl<'a> ParsedShred<'a> {
+    /// True iff this is a data shred carrying the LAST_SHRED_IN_SLOT bit.
+    pub fn is_last_in_slot(&self) -> bool {
+        self.data_flags.is_some_and(|f| f & SHRED_FLAG_LAST_IN_SLOT != 0)
+    }
+
+    /// True iff this is a data shred with DATA_COMPLETE (last data shred of its FEC set).
+    pub fn is_data_complete(&self) -> bool {
+        self.data_flags.is_some_and(|f| f & SHRED_FLAG_DATA_COMPLETE != 0)
+    }
 }
 
 /// Parse a raw shred buffer up through Merkle proof location.
@@ -199,6 +220,11 @@ pub fn parse_shred(raw: &[u8]) -> Result<ParsedShred<'_>, ShredError> {
         }
     };
 
+    let data_flags = match variant.kind {
+        ShredKind::Data => Some(raw[DATA_SHRED_FLAGS_OFFSET]),
+        ShredKind::Code => None,
+    };
+
     Ok(ParsedShred {
         raw,
         header,
@@ -206,6 +232,7 @@ pub fn parse_shred(raw: &[u8]) -> Result<ParsedShred<'_>, ShredError> {
         proof_range,
         chained_root,
         erasure_shard_index,
+        data_flags,
     })
 }
 
@@ -267,6 +294,7 @@ pub fn verify_shred(raw: &[u8], leader_pubkey: &[u8; 32]) -> Result<VerifiedShre
         merkle_root: root,
         chained_root: p.chained_root,
         kind: p.header.variant.kind,
+        data_flags: p.data_flags,
     })
 }
 
@@ -279,6 +307,17 @@ pub struct VerifiedShred {
     pub merkle_root: [u8; 32],
     pub chained_root: Option<[u8; 32]>,
     pub kind: ShredKind,
+    /// Data-shred flags byte (None for coding shreds). Use `is_last_in_slot()` etc.
+    pub data_flags: Option<u8>,
+}
+
+impl VerifiedShred {
+    pub fn is_last_in_slot(&self) -> bool {
+        self.data_flags.is_some_and(|f| f & SHRED_FLAG_LAST_IN_SLOT != 0)
+    }
+    pub fn is_data_complete(&self) -> bool {
+        self.data_flags.is_some_and(|f| f & SHRED_FLAG_DATA_COMPLETE != 0)
+    }
 }
 
 #[cfg(test)]

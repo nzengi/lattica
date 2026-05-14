@@ -294,6 +294,9 @@ fn cmd_das_demo(n_str: &str) -> ExitCode {
                         hex::encode(merkle_root), das_confidence
                     );
                 }
+                FecEvent::SlotFinalized { .. } => {
+                    // Single-FEC demo without LAST_IN_SLOT flag — won't fire here.
+                }
                 FecEvent::Rejected { reason } => {
                     println!("  [reject] {reason}");
                 }
@@ -312,6 +315,101 @@ fn cmd_das_demo(n_str: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn cmd_slot_demo() -> ExitCode {
+    // Builds a synthetic 2-FEC-set slot and walks it through the assembler so
+    // you can see the SlotFinalized event with aggregate slot_root.
+    //
+    // Slot 0xdead0042 carries 2 FEC sets:
+    //   set @ fec_set_index=0  — 32 data + 32 coding shreds, no flags
+    //   set @ fec_set_index=32 — 32 data + 32 coding shreds, LAST_IN_SLOT on the data shreds
+    //
+    // We deliver all 64 shreds of each set and expect exactly one SlotFinalized.
+    use lattica_shred::{SHRED_FLAG_DATA_COMPLETE, SHRED_FLAG_LAST_IN_SLOT};
+    let signing = SigningKey::from_bytes(&[0x5a; 32]);
+    let leader_pk = signing.verifying_key().to_bytes();
+    let payload: Vec<u8> = (0..3_000u32).flat_map(|i| i.to_le_bytes()).collect();
+    let slot: u64 = 0xdead_0042;
+
+    let mk_set = |idx: u32, last: bool| -> Vec<Vec<u8>> {
+        let flags = if last {
+            SHRED_FLAG_DATA_COMPLETE | SHRED_FLAG_LAST_IN_SLOT
+        } else {
+            0
+        };
+        build_fec_set(
+            &payload,
+            FecSetParams {
+                slot,
+                fec_set_index: idx,
+                version: 1,
+                parent_offset: 1,
+                flags,
+                chained_root: [0u8; 32],
+                signing_key: &signing,
+            },
+        )
+        .expect("build_fec_set")
+        .shreds
+    };
+
+    let set_a = mk_set(0, false);
+    let set_b = mk_set(32, true);
+    println!("constructed 2-FEC-set slot {slot}:");
+    println!("  set A: fec_set_index=0,  flags=0       (32 + 32 shreds)");
+    println!("  set B: fec_set_index=32, flags=0xc0    (DATA_COMPLETE | LAST_IN_SLOT)");
+    println!();
+
+    let mut asm = FecAssembler::new(leader_pk);
+    let mut finalized_seen = 0usize;
+    for (label, set) in [("A", &set_a), ("B", &set_b)] {
+        println!("delivering set {label} (32 data shreds)…");
+        for raw in set.iter().take(32) {
+            for ev in asm.ingest(raw) {
+                match ev {
+                    FecEvent::Reconstructed { key, das_confidence, .. } => {
+                        println!(
+                            "  [done  ] fec_set={} reconstructed das_conf={:.6}",
+                            key.fec_set_index, das_confidence
+                        );
+                    }
+                    FecEvent::SlotFinalized {
+                        slot,
+                        fec_roots,
+                        slot_root,
+                        total_shreds_observed,
+                        slot_das_confidence,
+                    } => {
+                        finalized_seen += 1;
+                        println!();
+                        println!("[SLOT FINALIZED] slot={slot}");
+                        println!("  n_fec_sets         = {}", fec_roots.len());
+                        println!("  total_shreds       = {total_shreds_observed}");
+                        println!("  slot_das_conf      = {}", fmt_prob(slot_das_confidence));
+                        println!("  slot_root          = {}", hex::encode(slot_root));
+                        for (i, r) in fec_roots.iter().enumerate() {
+                            println!("    fec_roots[{i}]       = {}", hex::encode(r));
+                        }
+                    }
+                    FecEvent::Rejected { reason } => {
+                        println!("  [reject] {reason}");
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    println!();
+    if finalized_seen == 1 {
+        println!("verdict: 2-FEC slot finalized into a single 32-byte slot_root.");
+        println!("         Phase 3 milestone — multi-FEC + LAST_IN_SLOT detection works.");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("expected exactly 1 SlotFinalized event, got {finalized_seen}");
+        ExitCode::FAILURE
+    }
+}
+
 fn usage() -> ExitCode {
     eprintln!(
         "usage:
@@ -319,6 +417,7 @@ fn usage() -> ExitCode {
   lattica hash-account <pubkey-base58>
   lattica verify-shred <path-to-shred-bytes-or-hex> <leader-pubkey-base58>
   lattica das-demo <n>          # construct synthetic FEC, deliver n of 64 shreds, show DAS outcome
+  lattica slot-demo             # build 2 FEC sets, finalize the slot, print slot_root (Phase 3)
   lattica keygen [path]         # generate Solana-format keypair (default ~/.config/solana/lattica.json)
   lattica leaders <start> <n>   # print mainnet leaders for n consecutive slots starting at <start>"
     );
@@ -335,6 +434,7 @@ fn main() -> ExitCode {
         "hash-account" if args.len() == 3 => cmd_hash_account(&args[2]),
         "verify-shred" if args.len() == 4 => cmd_verify_shred(&args[2], &args[3]),
         "das-demo" if args.len() == 3 => cmd_das_demo(&args[2]),
+        "slot-demo" => cmd_slot_demo(),
         "keygen" => cmd_keygen(args.get(2).map(String::as_str)),
         "leaders" if args.len() == 4 => cmd_leaders(&args[2], &args[3]),
         _ => usage(),

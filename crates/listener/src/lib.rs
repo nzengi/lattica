@@ -9,7 +9,9 @@
 use lattica_reedsol::{reconstruct, SHREDS_PER_FEC};
 use lattica_shred::{
     fec_set::ERASURE_SHARD_SIZE, parse_shred, verify_shred, ShredKind, SIZE_OF_SIGNATURE,
+    MERKLE_HASH_PREFIX_NODE, SIZE_OF_PROOF_ENTRY,
 };
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
 pub mod leader;
@@ -47,6 +49,23 @@ pub enum FecEvent {
         /// given the number of distinct shreds we observed before reconstruction.
         das_confidence: f64,
     },
+    /// All FEC sets in the slot have been reconstructed AND a shred carrying
+    /// `LAST_SHRED_IN_SLOT` has been seen. The slot can now be served as a
+    /// single attestation.
+    SlotFinalized {
+        slot: u64,
+        /// FEC roots in `fec_set_index` order.
+        fec_roots: Vec<[u8; 32]>,
+        /// Merkle root over all `fec_roots` using the same domain-separated SHA-256
+        /// ladder as individual shred Merkle trees. A 2-KiB witness commits to the
+        /// entire slot.
+        slot_root: [u8; 32],
+        /// Total distinct shreds observed across all FEC sets in the slot.
+        total_shreds_observed: usize,
+        /// Aggregate DAS confidence: 1 − ∏ᵢ (1 − cᵢ), the probability that *some*
+        /// FEC set caught the adversary if any did. (Independent samples per set.)
+        slot_das_confidence: f64,
+    },
     /// Shred rejected (sig mismatch, root mismatch, etc.).
     Rejected {
         reason: String,
@@ -61,6 +80,8 @@ struct FecState {
     shards: Vec<Option<Vec<u8>>>,
     distinct_seen: usize,
     reconstructed: bool,
+    /// per-set DAS confidence as of reconstruction time
+    das_confidence_at_reconstruct: f64,
 }
 
 impl FecState {
@@ -72,9 +93,27 @@ impl FecState {
     }
 }
 
+/// Slot-level state: tracks which FEC sets we've seen for this slot and whether
+/// the leader's LAST_SHRED_IN_SLOT marker has arrived.
+#[derive(Default)]
+struct SlotState {
+    /// `fec_set_index` of every FEC set we've seen at least one shred for.
+    seen_fec_indices: std::collections::BTreeSet<u32>,
+    /// `fec_set_index` of every FEC set we've fully reconstructed.
+    reconstructed_fec_indices: std::collections::BTreeSet<u32>,
+    /// True once a data shred with `LAST_SHRED_IN_SLOT` was accepted.
+    last_shred_seen: bool,
+    /// `fec_set_index` of the FEC set carrying the LAST_IN_SLOT marker.
+    /// Used to know which FEC index range is "complete" for the slot.
+    last_fec_set_index: Option<u32>,
+    /// True once we emitted a SlotFinalized event for this slot.
+    finalized: bool,
+}
+
 pub struct FecAssembler {
     resolver: Box<dyn LeaderResolver>,
     states: HashMap<FecKey, FecState>,
+    slots: HashMap<u64, SlotState>,
 }
 
 impl FecAssembler {
@@ -85,7 +124,11 @@ impl FecAssembler {
 
     /// Construct with a custom leader resolver (e.g. Helius-backed).
     pub fn with_resolver(resolver: Box<dyn LeaderResolver>) -> Self {
-        Self { resolver, states: HashMap::new() }
+        Self {
+            resolver,
+            states: HashMap::new(),
+            slots: HashMap::new(),
+        }
     }
 
     /// Feed a raw shred. Returns the sequence of events caused by this ingest.
@@ -116,8 +159,31 @@ impl FecAssembler {
         let key = FecKey { slot: v.slot, fec_set_index: v.fec_set_index };
         let state = self.states.entry(key.clone()).or_insert_with(FecState::new);
 
+        // Slot-level bookkeeping: every shred (even rejected duplicates / already-
+        // reconstructed sets) updates "have we seen this fec_set_index" and the
+        // last-shred-in-slot marker. Without this we'd miss the LAST_IN_SLOT bit
+        // if it arrives after the FEC set is already reconstructed.
+        let slot_state = self.slots.entry(v.slot).or_default();
+        slot_state.seen_fec_indices.insert(v.fec_set_index);
+        if v.is_last_in_slot() {
+            slot_state.last_shred_seen = true;
+            // The last_fec_set_index is the index of the FEC set carrying the marker.
+            // Track the maximum because two shreds in the same set may arrive out of
+            // order; the marker can only live on the data-complete shred of the
+            // final FEC set.
+            slot_state.last_fec_set_index = Some(
+                slot_state.last_fec_set_index.map_or(v.fec_set_index, |x| x.max(v.fec_set_index)),
+            );
+        }
+
         if state.reconstructed {
-            return events; // we're done with this set
+            // Even though this FEC set is already done, the *slot* may still
+            // need finalization — fall through to the slot-finalization check
+            // at the end.
+            if let Some(ev) = self.try_finalize_slot(v.slot) {
+                events.push(ev);
+            }
+            return events;
         }
 
         // 2. confirm merkle root consistency for the set
@@ -181,11 +247,20 @@ impl FecAssembler {
                     // that a withholding adversary publishing only 31 shreds remains
                     // undetected is C(31, N) / C(64, N).
                     let das = das_confidence(state.distinct_seen);
+                    state.das_confidence_at_reconstruct = das;
                     events.push(FecEvent::Reconstructed {
-                        key,
+                        key: key.clone(),
                         merkle_root: state.merkle_root.unwrap(),
                         das_confidence: das,
                     });
+
+                    // Mark this fec_set_index as reconstructed in the slot state.
+                    // Then check whether the entire slot is now complete.
+                    let slot_state = self.slots.entry(v.slot).or_default();
+                    slot_state.reconstructed_fec_indices.insert(v.fec_set_index);
+                    if let Some(ev) = self.try_finalize_slot(v.slot) {
+                        events.push(ev);
+                    }
                 }
                 Err(e) => {
                     events.push(FecEvent::Rejected { reason: format!("rs reconstruct: {e}") });
@@ -194,6 +269,95 @@ impl FecAssembler {
         }
         events
     }
+
+    /// Returns `Some(SlotFinalized)` exactly once, the first time the slot
+    /// satisfies both conditions:
+    ///   1. We've seen a shred with `LAST_SHRED_IN_SLOT`, AND
+    ///   2. Every `fec_set_index` we've ever seen for this slot (up to and
+    ///      including `last_fec_set_index`) has been reconstructed.
+    ///
+    /// Note: Solana fec_set_index values are *non-contiguous* — for a 32-data-
+    /// shred FEC set, they're the starting shred index (0, 32, 64, …), not a
+    /// dense 0,1,2,… enumeration. We therefore iterate `seen_fec_indices` (a
+    /// BTreeSet of the actual indices observed) rather than a numeric range.
+    fn try_finalize_slot(&mut self, slot: u64) -> Option<FecEvent> {
+        let slot_state = self.slots.get_mut(&slot)?;
+        if slot_state.finalized {
+            return None;
+        }
+        if !slot_state.last_shred_seen {
+            return None;
+        }
+        let last_idx = slot_state.last_fec_set_index?;
+
+        // Snapshot the indices we need to check & report (BTreeSet iterates ascending).
+        let indices_to_check: Vec<u32> = slot_state
+            .seen_fec_indices
+            .iter()
+            .copied()
+            .filter(|i| *i <= last_idx)
+            .collect();
+
+        for i in &indices_to_check {
+            if !slot_state.reconstructed_fec_indices.contains(i) {
+                return None;
+            }
+        }
+        // Sanity: the FEC set that carries the LAST_IN_SLOT marker must itself
+        // appear in seen_fec_indices (it was inserted when its first shred
+        // arrived). If somehow it's not, we don't finalize.
+        if !slot_state.seen_fec_indices.contains(&last_idx) {
+            return None;
+        }
+        slot_state.finalized = true;
+
+        // Collect per-set roots in fec_set_index order, plus aggregate stats.
+        let mut fec_roots: Vec<[u8; 32]> = Vec::with_capacity(indices_to_check.len());
+        let mut total_shreds = 0usize;
+        let mut undetect = 1.0f64;
+        for i in &indices_to_check {
+            let key = FecKey { slot, fec_set_index: *i };
+            let st = self.states.get(&key)?;
+            fec_roots.push(st.merkle_root?);
+            total_shreds += st.distinct_seen;
+            // Aggregate "P[adversary undetected]" across independent sets:
+            // 1 - confidence_i = P[set i didn't catch them]; product over sets.
+            undetect *= 1.0 - st.das_confidence_at_reconstruct;
+        }
+        let slot_root = aggregate_root(&fec_roots);
+
+        Some(FecEvent::SlotFinalized {
+            slot,
+            fec_roots,
+            slot_root,
+            total_shreds_observed: total_shreds,
+            slot_das_confidence: 1.0 - undetect,
+        })
+    }
+}
+
+/// Hashes a list of FEC roots into a single slot root using the same
+/// domain-separated SHA-256 ladder as Solana's intra-shred Merkle tree
+/// (CT-style with 20-byte truncation). Last odd node duplicates itself.
+fn aggregate_root(roots: &[[u8; 32]]) -> [u8; 32] {
+    if roots.is_empty() {
+        return [0u8; 32];
+    }
+    let mut layer: Vec<[u8; 32]> = roots.to_vec();
+    while layer.len() > 1 {
+        let mut next = Vec::with_capacity(layer.len().div_ceil(2));
+        for chunk in layer.chunks(2) {
+            let a = &chunk[0];
+            let b = if chunk.len() == 2 { &chunk[1] } else { &chunk[0] };
+            let mut h = Sha256::new();
+            h.update(MERKLE_HASH_PREFIX_NODE);
+            h.update(&a[..SIZE_OF_PROOF_ENTRY]);
+            h.update(&b[..SIZE_OF_PROOF_ENTRY]);
+            next.push(<[u8; 32]>::from(h.finalize()));
+        }
+        layer = next;
+    }
+    layer[0]
 }
 
 /// DAS sampling confidence.
@@ -321,5 +485,133 @@ mod tests {
         // n=10 still leaves meaningful adversary room.
         let c10 = das_confidence(10);
         assert!(c10 > 0.99 && c10 < 1.0);
+    }
+
+    // -------------------------------------------------------------------------
+    // Slot finalization (Phase 3) — multi-FEC-set + LAST_SHRED_IN_SLOT detection
+    // -------------------------------------------------------------------------
+
+    /// Build a FEC set at a specific slot/index with optional LAST_IN_SLOT bit set
+    /// on every data shred. (DATA_COMPLETE on every data shred is fine for tests
+    /// — the assembler only ever reads the bit OR'd into any one shred it accepts.)
+    fn build_set_at(
+        signing: &SigningKey,
+        slot: u64,
+        fec_set_index: u32,
+        payload_len: usize,
+        last_in_slot: bool,
+    ) -> (Vec<Vec<u8>>, [u8; 32]) {
+        use lattica_shred::{SHRED_FLAG_DATA_COMPLETE, SHRED_FLAG_LAST_IN_SLOT};
+        let payload: Vec<u8> = (0..(payload_len / 4) as u32)
+            .flat_map(|i| i.to_le_bytes())
+            .collect();
+        let flags = if last_in_slot {
+            SHRED_FLAG_DATA_COMPLETE | SHRED_FLAG_LAST_IN_SLOT
+        } else {
+            0
+        };
+        let params = FecSetParams {
+            slot,
+            fec_set_index,
+            version: 1,
+            parent_offset: 1,
+            flags,
+            chained_root: [0u8; 32],
+            signing_key: signing,
+        };
+        let fec = build_fec_set(&payload, params).unwrap();
+        (fec.shreds, fec.merkle_root)
+    }
+
+    fn collect_slot_finalized(events: &[FecEvent]) -> Option<&FecEvent> {
+        events.iter().find(|e| matches!(e, FecEvent::SlotFinalized { .. }))
+    }
+
+    #[test]
+    fn slot_finalizes_when_all_sets_done_and_last_seen() {
+        let signing = SigningKey::from_bytes(&[5u8; 32]);
+        let leader_pk = signing.verifying_key().to_bytes();
+        let (set0, root0) = build_set_at(&signing, 222, 0, 4_000, false);
+        let (set1, root1) = build_set_at(&signing, 222, 32, 4_000, true); // last in slot
+
+        let mut asm = FecAssembler::new(leader_pk);
+        let mut all_events = Vec::new();
+        for raw in set0.iter().take(32).chain(set1.iter().take(32)) {
+            all_events.extend(asm.ingest(raw));
+        }
+
+        let final_ev = collect_slot_finalized(&all_events)
+            .expect("SlotFinalized must fire once both sets are done and LAST_IN_SLOT is seen");
+        match final_ev {
+            FecEvent::SlotFinalized { slot, fec_roots, slot_root, total_shreds_observed, slot_das_confidence } => {
+                assert_eq!(*slot, 222);
+                assert_eq!(fec_roots.len(), 2);
+                assert_eq!(fec_roots[0], root0);
+                assert_eq!(fec_roots[1], root1);
+                assert_eq!(*total_shreds_observed, 64);
+                assert!(*slot_das_confidence > 0.999_999);
+                let recomputed = aggregate_root(&[root0, root1]);
+                assert_eq!(*slot_root, recomputed, "slot_root must equal aggregate_root over fec_roots");
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn slot_does_not_finalize_without_last_marker() {
+        // Both FEC sets fully reconstructed but neither carries LAST_IN_SLOT.
+        // SlotFinalized must NOT fire — we don't yet know how many sets the slot has.
+        let signing = SigningKey::from_bytes(&[6u8; 32]);
+        let leader_pk = signing.verifying_key().to_bytes();
+        let (set0, _) = build_set_at(&signing, 333, 0, 2_000, false);
+        let (set1, _) = build_set_at(&signing, 333, 32, 2_000, false);
+
+        let mut asm = FecAssembler::new(leader_pk);
+        let mut all_events = Vec::new();
+        for raw in set0.iter().take(32).chain(set1.iter().take(32)) {
+            all_events.extend(asm.ingest(raw));
+        }
+        assert!(collect_slot_finalized(&all_events).is_none(),
+            "no LAST_IN_SLOT seen → slot must remain open");
+    }
+
+    #[test]
+    fn slot_does_not_finalize_when_a_set_is_incomplete() {
+        // LAST_IN_SLOT seen, fec_set_index=0 fully reconstructed,
+        // but fec_set_index=32 (the LAST one) only has 31 shreds → can't reconstruct.
+        let signing = SigningKey::from_bytes(&[7u8; 32]);
+        let leader_pk = signing.verifying_key().to_bytes();
+        let (set0, _) = build_set_at(&signing, 444, 0, 2_000, false);
+        let (set1, _) = build_set_at(&signing, 444, 32, 2_000, true);
+
+        let mut asm = FecAssembler::new(leader_pk);
+        let mut all_events = Vec::new();
+        for raw in set0.iter().take(32) {
+            all_events.extend(asm.ingest(raw));
+        }
+        for raw in set1.iter().take(31) {
+            all_events.extend(asm.ingest(raw));
+        }
+        assert!(collect_slot_finalized(&all_events).is_none(),
+            "fec_set 32 is missing 1 shred → slot is not finalizable yet");
+    }
+
+    #[test]
+    fn slot_finalizes_idempotently() {
+        // Once SlotFinalized has fired for a slot, further shreds for that slot
+        // (even valid ones) must not produce another SlotFinalized.
+        let signing = SigningKey::from_bytes(&[8u8; 32]);
+        let leader_pk = signing.verifying_key().to_bytes();
+        let (set0, _) = build_set_at(&signing, 555, 0, 2_000, true);
+
+        let mut asm = FecAssembler::new(leader_pk);
+        let mut all_events = Vec::new();
+        for raw in set0.iter() {
+            all_events.extend(asm.ingest(raw));
+        }
+        let n_finalized = all_events.iter()
+            .filter(|e| matches!(e, FecEvent::SlotFinalized { .. }))
+            .count();
+        assert_eq!(n_finalized, 1, "SlotFinalized must fire exactly once per slot");
     }
 }

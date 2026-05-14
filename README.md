@@ -127,11 +127,11 @@ scripts/
 └── run-mainnet.sh  Orchestrates proxy + lattica-listen for live mainnet.
 ```
 
-15/15 unit tests pass:
+23/23 unit tests pass:
 
 ```
 $ cargo test --workspace
-... 15 passed; 0 failed
+... 23 passed; 0 failed
 ```
 
 Including:
@@ -141,6 +141,8 @@ Including:
 * `assembler_does_not_reconstruct_at_31` — withholding at threshold − 1 correctly does not trigger reconstruction.
 * `additive_homomorphism`, `slot_delta_reconstructs_after_state` — LtHash math.
 * `rs_round_trip_recovers_from_any_32` — Reed-Solomon recovery from arbitrary 32 of 64 shards.
+* `slot_finalizes_when_all_sets_done_and_last_seen` — multi-FEC-set slot collapses into one 32-byte `slot_root` once `LAST_SHRED_IN_SLOT` arrives.
+* `slot_does_not_finalize_without_last_marker` / `slot_does_not_finalize_when_a_set_is_incomplete` / `slot_finalizes_idempotently` — Phase 3.1 negative & idempotency guarantees.
 
 ---
 
@@ -162,6 +164,9 @@ cargo test  --workspace
 ./target/release/lattica das-demo 32   # recovery succeeds; das_conf = 1.0
 ./target/release/lattica das-demo 20   # withholding; P[adv undetected] = 4.3e-9
 ./target/release/lattica das-demo 8    # marginal; P[adv undetected] = 1.78e-3
+
+# Phase 3 — multi-FEC-set slot finalization (synthetic 2-set slot)
+./target/release/lattica slot-demo
 
 # Live mainnet via Helius
 ./target/release/lattica slot
@@ -224,7 +229,8 @@ existing turbine broadcast; nothing on-chain or in-consensus changes.
 |------|-------------|-------|
 | 1 | Wire-format parser, FEC constructor, Reed-Solomon, LtHash | ✓ done |
 | 2 | FEC assembler, leader-aware listener, UDP daemon, CLI, E2E test | ✓ done |
-| 3 | Aggregation gossip (libp2p), Byzantine-tolerant attestation | sketched (`crates/attest`) |
+| 3.1 | Multi-FEC-set slot tracking + `LAST_SHRED_IN_SLOT` detection + slot_root aggregation | ✓ done |
+| 3.2 | Aggregation gossip (libp2p), Byzantine-tolerant attestation | sketched (`crates/attest`) |
 | 4 | WASM light-client SDK (browser, mobile) | not started |
 | 5 | Bridge adapter (1024-slot Σ Δᵢ → BN254 on-chain verifier) | not started |
 | - | Live mainnet shred ingestion via Jito ShredStream | blocked on ~48h sign-up |
@@ -238,9 +244,10 @@ existing turbine broadcast; nothing on-chain or in-consensus changes.
 * **Synthetic shreds today.** The byte-level constructor matches mainnet format
   exactly, but real mainnet shred ingestion requires Jito ShredStream access
   (or running a Solana validator).
-* **Single FEC set per slot in current assembler.** A real slot has many FEC
-  sets; the assembler handles them keyed by `(slot, fec_set_index)` but does
-  not yet finalize slots when the leader's last shred arrives.
+* ~~Single FEC set per slot in current assembler.~~ **Resolved in Phase 3.1**:
+  the assembler now tracks every FEC set in a slot, detects the leader's
+  `LAST_SHRED_IN_SLOT` flag, and emits `SlotFinalized` with a 32-byte
+  `slot_root` over all per-set Merkle roots once the slot is complete.
 * **Δ_lthash recompute on the listener** requires replaying the block's entries
   through the SVM. Phase 2 deliberately stops at FEC reassembly; entry-level
   replay is Phase 3+.

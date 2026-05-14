@@ -87,6 +87,13 @@ async fn main() -> ExitCode {
                 println!("[done!] slot={} fec_set={} root={} das_conf={:.6}",
                     key.slot, key.fec_set_index, hex::encode(merkle_root), das_confidence);
             }
+            FecEvent::SlotFinalized { slot, fec_roots, slot_root, total_shreds_observed, slot_das_confidence } => {
+                println!(
+                    "[SLOT!] slot={} n_fec_sets={} shreds_observed={} slot_das_conf={:.9} slot_root={}",
+                    slot, fec_roots.len(), total_shreds_observed, slot_das_confidence,
+                    hex::encode(slot_root),
+                );
+            }
             FecEvent::Rejected { reason } => {
                 eprintln!("[rej] {reason}");
             }
