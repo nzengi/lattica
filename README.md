@@ -127,11 +127,11 @@ scripts/
 └── run-mainnet.sh  Orchestrates proxy + lattica-listen for live mainnet.
 ```
 
-23/23 unit tests pass:
+31/31 unit tests pass:
 
 ```
 $ cargo test --workspace
-... 23 passed; 0 failed
+... 31 passed; 0 failed
 ```
 
 Including:
@@ -143,6 +143,7 @@ Including:
 * `rs_round_trip_recovers_from_any_32` — Reed-Solomon recovery from arbitrary 32 of 64 shards.
 * `slot_finalizes_when_all_sets_done_and_last_seen` — multi-FEC-set slot collapses into one 32-byte `slot_root` once `LAST_SHRED_IN_SLOT` arrives.
 * `slot_does_not_finalize_without_last_marker` / `slot_does_not_finalize_when_a_set_is_incomplete` / `slot_finalizes_idempotently` — Phase 3.1 negative & idempotency guarantees.
+* `happy_path_complete_set_verifies` / `single_flipped_byte_fails` / `spurious_extra_transition_fails` / `missing_transition_fails` — Phase 3.3 LtHash slot verifier completeness & soundness against tampering.
 
 ---
 
@@ -165,8 +166,12 @@ cargo test  --workspace
 ./target/release/lattica das-demo 20   # withholding; P[adv undetected] = 4.3e-9
 ./target/release/lattica das-demo 8    # marginal; P[adv undetected] = 1.78e-3
 
-# Phase 3 — multi-FEC-set slot finalization (synthetic 2-set slot)
+# Phase 3.1 — multi-FEC-set slot finalization (synthetic 2-set slot)
 ./target/release/lattica slot-demo
+
+# Phase 3.3 — LtHash all-or-nothing slot verifier
+./target/release/lattica verify-slot ok      # happy path: verifier returns ✓
+./target/release/lattica verify-slot tamper  # 1 byte flipped: verifier returns ✗ (exit 2)
 
 # Live mainnet via Helius
 ./target/release/lattica slot
@@ -230,6 +235,7 @@ existing turbine broadcast; nothing on-chain or in-consensus changes.
 | 1 | Wire-format parser, FEC constructor, Reed-Solomon, LtHash | ✓ done |
 | 2 | FEC assembler, leader-aware listener, UDP daemon, CLI, E2E test | ✓ done |
 | 3.1 | Multi-FEC-set slot tracking + `LAST_SHRED_IN_SLOT` detection + slot_root aggregation | ✓ done |
+| 3.3 | All-or-nothing LtHash slot verifier (`crates/attest::verify_slot_delta`) | ✓ done |
 | 3.2 | Aggregation gossip (libp2p), Byzantine-tolerant attestation | sketched (`crates/attest`) |
 | 4 | WASM light-client SDK (browser, mobile) | not started |
 | 5 | Bridge adapter (1024-slot Σ Δᵢ → BN254 on-chain verifier) | not started |

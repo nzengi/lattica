@@ -12,6 +12,7 @@ path = "src/main.rs"
 lattica-shred.workspace = true
 lattica-lthash.workspace = true
 lattica-listener = { path = "../listener" }
+lattica-attest = { path = "../attest" }
 ed25519-dalek.workspace = true
 getrandom.workspace = true
 ureq.workspace = true

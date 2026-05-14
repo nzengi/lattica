@@ -10,8 +10,9 @@
 
 use base64::Engine;
 use ed25519_dalek::SigningKey;
+use lattica_attest::{AccountTransition, Attestation, verify_slot_delta, VerifyError};
 use lattica_listener::{FecAssembler, FecEvent, das_confidence};
-use lattica_lthash::{AccountForHash, LtHash, hash_account};
+use lattica_lthash::{AccountForHash, LtHash, SlotDelta, hash_account};
 use lattica_shred::{
     fec_set::{FecSetParams, build_fec_set},
     verify_shred,
@@ -410,6 +411,109 @@ fn cmd_slot_demo() -> ExitCode {
     }
 }
 
+fn cmd_verify_slot(mode: &str) -> ExitCode {
+    // Two scenarios:
+    //   `ok`       — verifier supplies the same accounts the attestation was built from
+    //   `tamper`   — verifier flips one byte on one account's "new" state
+    //
+    // In both cases we build a synthetic 3-account slot, produce an Attestation
+    // covering it, then call verify_slot_delta against the chosen scenario.
+    let a_old = AccountForHash {
+        lamports: 1_000_000, data: b"alice-old", executable: false,
+        owner: [1; 32], pubkey: [11; 32],
+    };
+    let a_new = AccountForHash {
+        lamports: 1_000_500, data: b"alice-new", executable: false,
+        owner: [1; 32], pubkey: [11; 32],
+    };
+    let b_old = AccountForHash {
+        lamports: 2_000_000, data: b"bob-old", executable: false,
+        owner: [2; 32], pubkey: [22; 32],
+    };
+    let b_new = AccountForHash {
+        lamports: 2_000_500, data: b"bob-new", executable: false,
+        owner: [2; 32], pubkey: [22; 32],
+    };
+    let created = AccountForHash {
+        lamports: 5_000_000, data: b"newly-created", executable: false,
+        owner: [3; 32], pubkey: [33; 32],
+    };
+
+    // Build the on-chain "truth": Σ (h(new) − h(old)) over the actual modifications.
+    let mut sd = SlotDelta::new();
+    sd.mix(Some(&a_old), Some(&a_new));
+    sd.mix(Some(&b_old), Some(&b_new));
+    sd.mix(None, Some(&created));
+
+    let leader_pk = SigningKey::from_bytes(&[0x21; 32]).verifying_key().to_bytes();
+    let attestation = Attestation::from_delta(
+        0x1234_5678, // slot
+        0,
+        leader_pk,
+        [0xab; 32],
+        [0xcd; 64],
+        &sd.delta,
+    );
+
+    println!("constructed attestation for slot {} with 3 account transitions:", attestation.slot);
+    println!("  - alice    : modified (lamports + data)");
+    println!("  - bob      : modified (lamports + data)");
+    println!("  - created  : initialized (None → Some)");
+    println!("  delta checksum: {}", hex::encode(sd.delta.checksum()));
+    println!();
+
+    let transitions: Vec<AccountTransition<'_>> = match mode {
+        "ok" => {
+            println!("verifier mode: ok  — supplying the *true* transition set");
+            vec![
+                AccountTransition { old: Some(a_old), new: Some(a_new) },
+                AccountTransition { old: Some(b_old), new: Some(b_new) },
+                AccountTransition { old: None, new: Some(created) },
+            ]
+        }
+        "tamper" => {
+            println!("verifier mode: tamper — flipping bob's new-state data ('bob-new' → 'BOB-new')");
+            let b_new_tampered = AccountForHash {
+                lamports: 2_000_500, data: b"BOB-new", executable: false,
+                owner: [2; 32], pubkey: [22; 32],
+            };
+            vec![
+                AccountTransition { old: Some(a_old), new: Some(a_new) },
+                AccountTransition { old: Some(b_old), new: Some(b_new_tampered) },
+                AccountTransition { old: None, new: Some(created) },
+            ]
+        }
+        _ => {
+            eprintln!("mode must be 'ok' or 'tamper'");
+            return ExitCode::FAILURE;
+        }
+    };
+    println!();
+
+    match verify_slot_delta(&attestation, &transitions) {
+        Ok(()) => {
+            println!("✓ VERIFIED — recomputed Δ matches the attestation.");
+            println!("  All claimed transitions are consistent with the slot's published delta.");
+            ExitCode::SUCCESS
+        }
+        Err(VerifyError::DeltaMismatch { attested, recomputed }) => {
+            println!("✗ MISMATCH — recomputed Δ diverges from the attestation.");
+            println!("  attested   = {}", hex::encode(attested));
+            println!("  recomputed = {}", hex::encode(recomputed));
+            println!();
+            println!("  This is the cryptographic core: a single bit changed in any of");
+            println!("  the account state transitions makes the recomputed sum land in a");
+            println!("  different point of (Z/2^16)^1024 — collision-resistant under Blake3.");
+            // exit nonzero so scripts can detect mismatch
+            ExitCode::from(2)
+        }
+        Err(e) => {
+            eprintln!("verify error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 fn usage() -> ExitCode {
     eprintln!(
         "usage:
@@ -417,7 +521,8 @@ fn usage() -> ExitCode {
   lattica hash-account <pubkey-base58>
   lattica verify-shred <path-to-shred-bytes-or-hex> <leader-pubkey-base58>
   lattica das-demo <n>          # construct synthetic FEC, deliver n of 64 shreds, show DAS outcome
-  lattica slot-demo             # build 2 FEC sets, finalize the slot, print slot_root (Phase 3)
+  lattica slot-demo             # build 2 FEC sets, finalize the slot, print slot_root (Phase 3.1)
+  lattica verify-slot <mode>    # all-or-nothing LtHash slot verifier; mode = ok | tamper  (Phase 3.3)
   lattica keygen [path]         # generate Solana-format keypair (default ~/.config/solana/lattica.json)
   lattica leaders <start> <n>   # print mainnet leaders for n consecutive slots starting at <start>"
     );
@@ -435,6 +540,7 @@ fn main() -> ExitCode {
         "verify-shred" if args.len() == 4 => cmd_verify_shred(&args[2], &args[3]),
         "das-demo" if args.len() == 3 => cmd_das_demo(&args[2]),
         "slot-demo" => cmd_slot_demo(),
+        "verify-slot" if args.len() == 3 => cmd_verify_slot(&args[2]),
         "keygen" => cmd_keygen(args.get(2).map(String::as_str)),
         "leaders" if args.len() == 4 => cmd_leaders(&args[2], &args[3]),
         _ => usage(),

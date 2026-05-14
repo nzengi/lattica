@@ -10,3 +10,4 @@ lattica-lthash.workspace = true
 serde.workspace = true
 bincode.workspace = true
 thiserror.workspace = true
+hex.workspace = true
