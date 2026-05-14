@@ -2,6 +2,10 @@
 /vendor
 **/*.rs.bk
 
+# wasm-pack build artifacts (rebuilt via crates/wasm-verify/build.sh)
+/wasm-pkg
+/wasm-pkg-node
+
 # secrets
 .env
 .env.*

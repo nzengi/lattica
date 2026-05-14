@@ -5,9 +5,7 @@ edition.workspace = true
 description = "LATTICA — attestation packet format + libp2p gossip layer (Phase 3)"
 
 [dependencies]
-lattica-shred.workspace = true
 lattica-lthash.workspace = true
 serde.workspace = true
-bincode.workspace = true
 thiserror.workspace = true
 hex.workspace = true

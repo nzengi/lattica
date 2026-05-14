@@ -173,6 +173,11 @@ cargo test  --workspace
 ./target/release/lattica verify-slot ok      # happy path: verifier returns ✓
 ./target/release/lattica verify-slot tamper  # 1 byte flipped: verifier returns ✗ (exit 2)
 
+# Phase 4 — same verifier, compiled to WASM (110 KiB)
+./crates/wasm-verify/build.sh                # builds web + node bundles
+node crates/wasm-verify/demo/node/node-smoketest.cjs  # ~0.5 ms tamper detection
+# open crates/wasm-verify/demo/web/index.html in a browser for the visual demo
+
 # Live mainnet via Helius
 ./target/release/lattica slot
 ./target/release/lattica leaders 419549000 16
@@ -236,8 +241,8 @@ existing turbine broadcast; nothing on-chain or in-consensus changes.
 | 2 | FEC assembler, leader-aware listener, UDP daemon, CLI, E2E test | ✓ done |
 | 3.1 | Multi-FEC-set slot tracking + `LAST_SHRED_IN_SLOT` detection + slot_root aggregation | ✓ done |
 | 3.3 | All-or-nothing LtHash slot verifier (`crates/attest::verify_slot_delta`) | ✓ done |
+| 4 | WASM light-client SDK — 110 KiB module, sub-ms verification, web + Node targets | ✓ done |
 | 3.2 | Aggregation gossip (libp2p), Byzantine-tolerant attestation | sketched (`crates/attest`) |
-| 4 | WASM light-client SDK (browser, mobile) | not started |
 | 5 | Bridge adapter (1024-slot Σ Δᵢ → BN254 on-chain verifier) | not started |
 | - | Live mainnet shred ingestion via Jito ShredStream | blocked on ~48h sign-up |
 

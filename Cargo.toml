@@ -7,6 +7,7 @@ members = [
     "crates/lthash",
     "crates/listener",
     "crates/attest",
+    "crates/wasm-verify",
     "crates/cli",
     "crates/liquidator",
 ]
