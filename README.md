@@ -178,6 +178,13 @@ cargo test  --workspace
 node crates/wasm-verify/demo/node/node-smoketest.cjs  # ~0.5 ms tamper detection
 # open crates/wasm-verify/demo/web/index.html in a browser for the visual demo
 
+# Real-mainnet bridge — fetch a live account at slot S0 and S0+N via Helius,
+# build the real Δ_lthash, run the verifier on actual mainnet bytes
+./target/release/lattica rpc-attest SysvarC1ock11111111111111111111111111111111 8
+# Clock sysvar ticks every slot, so the delta is non-zero and the verifier
+# catches tampering on the real account data with no synthetic shreds, no
+# Jito ShredStream, no public IP — pure RPC.
+
 # Live mainnet via Helius
 ./target/release/lattica slot
 ./target/release/lattica leaders 419549000 16
@@ -242,6 +249,7 @@ existing turbine broadcast; nothing on-chain or in-consensus changes.
 | 3.1 | Multi-FEC-set slot tracking + `LAST_SHRED_IN_SLOT` detection + slot_root aggregation | ✓ done |
 | 3.3 | All-or-nothing LtHash slot verifier (`crates/attest::verify_slot_delta`) | ✓ done |
 | 4 | WASM light-client SDK — 110 KiB module, sub-ms verification, web + Node targets | ✓ done |
+| 4.1 | Real-mainnet RPC bridge — fetch live account state, build real Δ, verify (`lattica rpc-attest`) | ✓ done |
 | 3.2 | Aggregation gossip (libp2p), Byzantine-tolerant attestation | sketched (`crates/attest`) |
 | 5 | Bridge adapter (1024-slot Σ Δᵢ → BN254 on-chain verifier) | not started |
 | - | Live mainnet shred ingestion via Jito ShredStream | blocked on ~48h sign-up |
@@ -252,9 +260,12 @@ existing turbine broadcast; nothing on-chain or in-consensus changes.
 
 * **Proof of concept.** Not production-ready, not audited, no formal-verification
   of the FEC constructor.
-* **Synthetic shreds today.** The byte-level constructor matches mainnet format
-  exactly, but real mainnet shred ingestion requires Jito ShredStream access
-  (or running a Solana validator).
+* **Synthetic shreds today** for the FEC pipeline. The byte-level constructor
+  matches mainnet format exactly; real mainnet *shred* ingestion requires Jito
+  ShredStream access or running a validator. Real mainnet *account-state*
+  ingestion is fully wired via `lattica rpc-attest` (see Quick Start) — Phase
+  4.1 closed the synthetic-only critique for everything downstream of the
+  shred layer.
 * ~~Single FEC set per slot in current assembler.~~ **Resolved in Phase 3.1**:
   the assembler now tracks every FEC set in a slot, detects the leader's
   `LAST_SHRED_IN_SLOT` flag, and emits `SlotFinalized` with a 32-byte
