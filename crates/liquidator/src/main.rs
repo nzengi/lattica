@@ -10,9 +10,14 @@
 
 use anyhow::Result;
 
+mod disc_probe;
+mod idl_dump;
+mod ix;
+mod markets;
 mod paper;
 mod probe;
 mod scanner;
+mod simulate;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -27,8 +32,11 @@ async fn main() -> Result<()> {
     match mode.as_str() {
         "paper" => paper::run().await,
         "probe" => probe::run().await,
+        "simulate" => simulate::run().await,
+        "idl-dump" => idl_dump::run().await,
+        "disc-probe" => disc_probe::run().await,
         other => {
-            eprintln!("unknown mode: {other}. supported: paper | probe");
+            eprintln!("unknown mode: {other}. supported: paper | probe | simulate | idl-dump | disc-probe");
             Ok(())
         }
     }

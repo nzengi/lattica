@@ -2669,9 +2669,11 @@ dependencies = [
 name = "lattica-liquidator"
 version = "0.1.0"
 dependencies = [
+ "anchor-lang",
  "anyhow",
  "bs58",
  "drift-rs",
+ "flate2",
  "hex",
  "serde",
  "serde_json",
